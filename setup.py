@@ -320,7 +320,39 @@ def main():
         ]
         cmake_args.extend(fallback_args)
 
-    # Add CUDA-specific CMAKE arguments if CUDA build is enabled
+    # Add Ubuntu 22.04 / Python 3.10 specific fixes
+    if sys.platform.startswith("linux"):
+        # Check if we're on Ubuntu 22.04
+        try:
+            with open('/etc/os-release', 'r') as f:
+                os_info = f.read()
+                if 'VERSION_ID="22.04"' in os_info or 'jammy' in os_info.lower():
+                    ubuntu_22_04_fixes = [
+                        "-DOPENCV_PYTHON_DETECT_PYTHON2=OFF",
+                        "-DOPENCV_PYTHON_DETECT_PYTHON3=ON",
+                        "-DCMAKE_CXX_FLAGS=-Wno-error=restrict",
+                        "-DCMAKE_C_FLAGS=-Wno-error=restrict",
+                        "-DProtobuf_USE_STATIC_LIBS=OFF",
+                        "-DOPENCV_FFMPEG_USE_FIND_PACKAGE=ON",
+                        "-DHDF5_USE_STATIC_LIBRARIES=OFF",
+                    ]
+                    
+                    # Python 3.10 specific fixes
+                    if sys.version_info[:2] == (3, 10):
+                        # Fix Python library detection for 3.10
+                        python_lib_paths = [
+                            f"/usr/lib/x86_64-linux-gnu/libpython{sys.version_info.major}.{sys.version_info.minor}.so",
+                            f"/usr/lib/libpython{sys.version_info.major}.{sys.version_info.minor}.so",
+                        ]
+                        for lib_path in python_lib_paths:
+                            if os.path.exists(lib_path):
+                                ubuntu_22_04_fixes.append(f"-DPYTHON3_LIBRARY={lib_path}")
+                                break
+                    
+                    cmake_args.extend(ubuntu_22_04_fixes)
+                    print("Applied Ubuntu 22.04 compatibility fixes")
+        except FileNotFoundError:
+            pass
     if build_cuda:
         # Auto-detect CUDA installation if not explicitly set
         cuda_root = BUILD_CONFIG.get("CUDA_ROOT", os.environ.get("CUDA_ROOT", "/usr/local/cuda-12.8"))
@@ -643,19 +675,75 @@ class RearrangeCMakeOutput:
             os.path.join(cmake_install_dir, p) for p in final_install_relpaths
         ]
 
-        return (cls.wraps._classify_installed_files)(
-            final_install_paths,
-            package_data,
-            package_prefixes,
-            py_modules,
-            new_py_modules,
-            scripts,
-            new_scripts,
-            data_files,
-            # To get around a check that prepends source dir to paths and breaks package detection code.
-            cmake_source_dir="",
-            _cmake_install_dir=cmake_install_reldir,
-        )
+        # Check scikit-build version compatibility and call accordingly
+        try:
+            import skbuild
+            skbuild_version = getattr(skbuild, '__version__', '0.11.1')
+            
+            # For scikit-build 0.11.1 specifically (Ubuntu 22.04)
+            # Parameters: install_paths, package_data, package_prefixes, py_modules, 
+            #            new_py_modules, scripts, new_scripts, data_files, 
+            #            cmake_source_dir, cmake_install_dir
+            if skbuild_version == '0.11.1':
+                return (cls.wraps._classify_installed_files)(
+                    final_install_paths,      # install_paths
+                    package_data,             # package_data  
+                    package_prefixes,         # package_prefixes
+                    py_modules,               # py_modules
+                    new_py_modules,           # new_py_modules
+                    scripts,                  # scripts
+                    new_scripts,              # new_scripts
+                    data_files,               # data_files
+                    "",                       # cmake_source_dir
+                    cmake_install_reldir      # cmake_install_dir
+                )
+            
+            # For other 0.11.x versions, use keyword arguments to be safe
+            elif skbuild_version.startswith('0.11'):
+                return (cls.wraps._classify_installed_files)(
+                    install_paths=final_install_paths,
+                    package_data=package_data,
+                    package_prefixes=package_prefixes,
+                    py_modules=py_modules,
+                    new_py_modules=new_py_modules,
+                    scripts=scripts,
+                    new_scripts=new_scripts,
+                    data_files=data_files,
+                    cmake_source_dir="",
+                    cmake_install_dir=cmake_install_reldir
+                )
+            
+            # For newer versions (0.12+)
+            else:
+                import inspect
+                original_func = cls.wraps._classify_installed_files
+                sig = inspect.signature(original_func)
+                
+                call_args = {
+                    'install_paths': final_install_paths,
+                    'package_data': package_data,
+                    'package_prefixes': package_prefixes,
+                    'py_modules': py_modules,
+                    'new_py_modules': new_py_modules,
+                    'scripts': scripts,
+                    'new_scripts': new_scripts,
+                    'data_files': data_files,
+                    'cmake_source_dir': "",
+                }
+                
+                if 'cmake_install_reldir' in sig.parameters:
+                    call_args['cmake_install_reldir'] = cmake_install_reldir
+                elif '_cmake_install_dir' in sig.parameters:
+                    call_args['_cmake_install_dir'] = cmake_install_reldir
+                elif 'cmake_install_dir' in sig.parameters:
+                    call_args['cmake_install_dir'] = cmake_install_reldir
+                
+                return original_func(**call_args)
+                
+        except Exception as e:
+            print(f"Warning: scikit-build compatibility issue: {e}")
+            # This should not happen now that we know the exact signature
+            raise e
 
 
 def get_and_set_info(contrib, headless, rolling, ci_build):

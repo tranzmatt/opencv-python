@@ -3,7 +3,10 @@
 
 # Core build dependencies
 numpy>=1.19.3
-scikit-build>=0.15.0
+# Note: On Ubuntu 22.04, scikit-build 0.11.1 is system-managed
+# If you get compatibility issues, you may need to upgrade manually:
+# pip3 install --user --upgrade scikit-build>=0.15.0
+scikit-build>=0.11.1
 cmake>=3.18.0
 setuptools>=50.0.0
 wheel>=0.36.0
