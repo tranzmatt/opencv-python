@@ -9,6 +9,16 @@ import sysconfig
 import platform
 from skbuild import cmaker, setup
 
+# Try to import configuration from opencv_build_config.py
+try:
+    from opencv_build_config import BUILD_CONFIG, get_cmake_args as get_config_cmake_args
+    USE_CONFIG_FILE = True
+    print("Using configuration from opencv_build_config.py")
+except ImportError:
+    USE_CONFIG_FILE = False
+    BUILD_CONFIG = {}
+    print("opencv_build_config.py not found, using default configuration")
+
 
 def main():
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
@@ -17,10 +27,11 @@ def main():
     is_CI_build = True if CI_BUILD == "1" else False
     cmake_source_dir = "opencv"
     minimum_supported_numpy = "1.13.3"
-    build_contrib = get_build_env_var_by_name("contrib")
-    build_headless = get_build_env_var_by_name("headless")
-    build_java = "ON" if get_build_env_var_by_name("java") else "OFF"
-    build_rolling = get_build_env_var_by_name("rolling")
+    build_contrib = get_build_env_var_by_name("contrib") or BUILD_CONFIG.get("ENABLE_CONTRIB", True)
+    build_headless = get_build_env_var_by_name("headless") or BUILD_CONFIG.get("ENABLE_HEADLESS", False)
+    build_java = "ON" if (get_build_env_var_by_name("java") or BUILD_CONFIG.get("ENABLE_JAVA", True)) else "OFF"
+    build_rolling = get_build_env_var_by_name("rolling") or BUILD_CONFIG.get("ENABLE_ROLLING", False)
+    build_cuda = get_build_env_var_by_name("cuda") or BUILD_CONFIG.get("ENABLE_CUDA", False)
 
     install_requires = [
         'numpy>=1.13.3; python_version<"3.7"',
@@ -34,6 +45,27 @@ def main():
         "numpy>=1.23.5; python_version>='3.11'",
         "numpy>=1.26.0; python_version>='3.12'"
     ]
+
+    # Add CUDA runtime dependencies if CUDA build is enabled
+    if build_cuda:
+        cuda_requirements = [
+            'nvidia-cublas-cu12>=12.1.0.26',
+            'nvidia-cuda-cupti-cu12>=12.1.105',
+            'nvidia-cuda-nvrtc-cu12>=12.1.105',
+            'nvidia-cuda-runtime-cu12>=12.1.105',
+            'nvidia-cudnn-cu12>=8.9.2.26',
+            'nvidia-cufft-cu12>=11.0.2.54',
+            'nvidia-curand-cu12>=10.3.2.106',
+            'nvidia-cusolver-cu12>=11.4.5.107',
+            'nvidia-cusparse-cu12>=12.1.0.106',
+            'nvidia-nccl-cu12>=2.18.1',
+            'nvidia-nvtx-cu12>=12.1.105'
+        ]
+        # Only add CUDA requirements on Linux (CUDA support is primarily for Linux)
+        if sys.platform.startswith("linux"):
+            install_requires.extend(cuda_requirements)
+        else:
+            print("Warning: CUDA build requested but CUDA runtime packages are only available on Linux")
 
     python_version = cmaker.CMaker.get_python_version()
     python_lib_path = cmaker.CMaker.get_python_library(python_version) or ""
@@ -95,6 +127,10 @@ def main():
     if build_rolling:
         package_name += "-rolling"
 
+    # Add CUDA suffix to package name if CUDA is enabled
+    if build_cuda:
+        package_name += "-cuda"
+
     long_description = io.open("README.md", encoding="utf-8").read()
 
     packages = ["cv2", "cv2.data"]
@@ -124,8 +160,11 @@ def main():
         # In Windows, in python/X.Y/<arch>/; in Linux, in just python/X.Y/.
         # Naming conventions vary so widely between versions and OSes
         # had to give up on checking them.
+        # If not specifying PY_LIMITED_API, the Python sources go under python/cv2/python-3.MINOR_VERSION/ instead of python/cv2/python-3/
         [
-            r"python/cv2/python-%s/cv2.*"
+            r"python/cv2/python-%s*/cv2.*"
+            % (sys.version_info[0]) if 'CMAKE_ARGS' in os.environ and "-DPYTHON3_LIMITED_API=ON" in os.environ['CMAKE_ARGS']
+            else r"python/cv2/python-%s.*/cv2.*"
             % (sys.version_info[0])
         ]
         +
@@ -216,6 +255,176 @@ def main():
         )
     )
 
+    # Add configuration from opencv_build_config.py if available
+    if USE_CONFIG_FILE:
+        try:
+            config_cmake_args = get_config_cmake_args()
+            cmake_args.extend(config_cmake_args)
+            print(f"Added {len(config_cmake_args)} configuration arguments from opencv_build_config.py")
+        except Exception as e:
+            print(f"Warning: Could not load configuration from opencv_build_config.py: {e}")
+    else:
+        # Fallback to hardcoded configuration from your CMAKE_ARGS
+        fallback_args = [
+            # Build configuration from your CMAKE_ARGS
+            "-DBUILD_EXAMPLES=OFF",
+            "-DBUILD_PROTOBUF=OFF",
+            "-DBUILD_PERF_TESTS=OFF",
+            "-DBUILD_TESTS=OFF",
+            "-DBUILD_DOCS=OFF",
+            "-DBUILD_opencv_apps=OFF",
+            "-DBUILD_opencv_freetype=OFF",
+            "-DBUILD_opencv_dnn=ON",
+            "-DBUILD_opencv_dnn_modern=ON",
+            "-DBUILD_opencv_face=ON",
+            "-DBUILD_opencv_java=%s" % build_java,
+            
+            # Build type and compilation
+            "-DCMAKE_BUILD_TYPE=Release",
+            "-DCMAKE_SKIP_RPATH=ON",
+            "-DCMAKE_VERBOSE_MAKEFILE=ON",
+            "-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF",
+            "-DENABLE_PRECOMPILED_HEADERS=OFF",
+            
+            # Install configuration
+            "-DINSTALL_C_EXAMPLES=ON",
+            "-DINSTALL_PYTHON_EXAMPLES=ON",
+            "-DOPENCV_GENERATE_PKGCONFIG=ON",
+            
+            # Library dependencies
+            "-DWITH_ADE=OFF",
+            "-DWITH_CAROTENE=OFF",
+            "-DWITH_EIGEN=ON",
+            "-DWITH_FFMPEG=ON",
+            "-DWITH_FLATBUFFERS=OFF",
+            "-DWITH_GDAL=ON",
+            "-DWITH_GDCM=ON",
+            "-DWITH_GSTREAMER=ON",
+            "-DWITH_GPHOTO2=ON",
+            "-DWITH_GTK=OFF",
+            "-DWITH_IPP=OFF",
+            "-DWITH_ITT=OFF",
+            "-DWITH_JASPER=OFF",
+            "-DWITH_JPEG=ON",
+            "-DWITH_LAPACK=ON",
+            "-DWITH_NGRAPH=OFF",
+            "-DWITH_OPENCL=ON",
+            "-DWITH_OPENEXR=ON",
+            "-DWITH_OPENGL=ON",
+            "-DWITH_PNG=ON",
+            "-DWITH_PROTOBUF=ON",
+            "-DWITH_PVAPI=ON",
+            "-DWITH_QT=5",
+            "-DWITH_QUIRC=ON",
+            "-DWITH_TIFF=ON",
+            "-DWITH_UNICAP=OFF",
+            "-DWITH_VTK=ON",
+            "-DWITH_XINE=OFF",
+            "-DWITH_TBB=ON",
+            "-DWITH_1394=OFF",
+            "-DWITH_V4L=ON",
+            
+            # Protobuf configuration
+            "-DPROTOBUF_UPDATE_FILES=ON",
+            
+            # CURL configuration (adjust paths as needed)
+            "-DCURL_INCLUDE_DIR=/usr/include/curl",
+            "-DCURL_LIBRARY=/usr/lib/x86_64-linux-gnu/libcurl.so.4.7.0",
+            
+            # OpenCL configuration
+            "-DOPENCL_INCLUDE_DIR:PATH=/usr/include/CL/",
+        ]
+        cmake_args.extend(fallback_args)
+
+    # Add Ubuntu 22.04 / Python 3.10 specific fixes
+    if sys.platform.startswith("linux"):
+        # Check if we're on Ubuntu 22.04
+        try:
+            with open('/etc/os-release', 'r') as f:
+                os_info = f.read()
+                if 'VERSION_ID="22.04"' in os_info or 'jammy' in os_info.lower():
+                    ubuntu_22_04_fixes = [
+                        "-DOPENCV_PYTHON_DETECT_PYTHON2=OFF",
+                        "-DOPENCV_PYTHON_DETECT_PYTHON3=ON",
+                        "-DCMAKE_CXX_FLAGS=-Wno-error=restrict",
+                        "-DCMAKE_C_FLAGS=-Wno-error=restrict",
+                        "-DProtobuf_USE_STATIC_LIBS=OFF",
+                        "-DOPENCV_FFMPEG_USE_FIND_PACKAGE=ON",
+                        "-DHDF5_USE_STATIC_LIBRARIES=OFF",
+                    ]
+                    
+                    # Python 3.10 specific fixes
+                    if sys.version_info[:2] == (3, 10):
+                        # Fix Python library detection for 3.10
+                        python_lib_paths = [
+                            f"/usr/lib/x86_64-linux-gnu/libpython{sys.version_info.major}.{sys.version_info.minor}.so",
+                            f"/usr/lib/libpython{sys.version_info.major}.{sys.version_info.minor}.so",
+                        ]
+                        for lib_path in python_lib_paths:
+                            if os.path.exists(lib_path):
+                                ubuntu_22_04_fixes.append(f"-DPYTHON3_LIBRARY={lib_path}")
+                                break
+                    
+                    cmake_args.extend(ubuntu_22_04_fixes)
+                    print("Applied Ubuntu 22.04 compatibility fixes")
+        except FileNotFoundError:
+            pass
+    if build_cuda:
+        # Auto-detect CUDA installation if not explicitly set
+        cuda_root = BUILD_CONFIG.get("CUDA_ROOT", os.environ.get("CUDA_ROOT", "/usr/local/cuda-12.8"))
+        if not os.path.exists(cuda_root):
+            # Fallback to common CUDA locations
+            for potential_cuda in ["/usr/local/cuda", "/opt/cuda", "/usr/lib/cuda"]:
+                if os.path.exists(potential_cuda):
+                    cuda_root = potential_cuda
+                    break
+        
+        # Get CUDA architecture from config or auto-detect
+        cuda_arch = BUILD_CONFIG.get("CUDA_ARCH_BIN", os.environ.get("CUDA_ARCH_BIN", "8.0,8.6,8.7,8.9,9.0"))
+        
+        cuda_args = [
+            "-DWITH_CUDA=ON",
+            "-DCUDA_NVCC_EXECUTABLE=%s/bin/nvcc" % cuda_root,
+            "-DCMAKE_CUDA_COMPILER=%s/bin/nvcc" % cuda_root,
+            "-DCUDA_TOOLKIT_ROOT_DIR=%s" % cuda_root,
+            "-DCUDA_SDK_ROOT_DIR=%s" % cuda_root,
+            "-DCUDA_BIN_PATH=%s/bin" % cuda_root,
+            "-DCUDA_INCLUDE_DIRS=%s/include" % cuda_root,
+            "-DCUDA_VERSION=%s" % BUILD_CONFIG.get("CUDA_VERSION", "12.8"),
+            "-DCUDAToolkit_ROOT=%s" % cuda_root,
+            "-DCUDA_ARCH_BIN=%s" % cuda_arch,
+            "-DCUDA_FAST_MATH=%s" % ("ON" if BUILD_CONFIG.get("CUDA_FAST_MATH", True) else "OFF"),
+            "-DOPENCV_DNN_CUDA=ON",
+            "-DWITH_CUBLAS=ON",
+            "-DWITH_CUFFT=ON",
+            "-DWITH_CURAND=ON",
+            "-DWITH_CUDNN=ON",
+            "-DCUDA_SEPARABLE_COMPILATION=OFF",
+            # Additional CUDA optimizations
+            "-DCUDA_NVCC_FLAGS=--expt-relaxed-constexpr",
+            "-DWITH_NVCUVID=ON",
+            "-DWITH_NVCUVENC=ON",
+        ]
+        
+        # Add NumPy include dirs for CUDA builds
+        try:
+            import numpy
+            numpy_include = numpy.get_include()
+            cuda_args.append("-DPYTHON3_NUMPY_INCLUDE_DIRS=%s" % numpy_include)
+        except ImportError:
+            # Fallback to system numpy if available
+            potential_numpy_paths = [
+                "/usr/lib/python3/dist-packages/numpy/core/include",
+                "/usr/local/lib/python3/dist-packages/numpy/core/include"
+            ]
+            for np_path in potential_numpy_paths:
+                if os.path.exists(np_path):
+                    cuda_args.append("-DPYTHON3_NUMPY_INCLUDE_DIRS=%s" % np_path)
+                    break
+        
+        cmake_args.extend(cuda_args)
+        print(f"CUDA support enabled with toolkit at: {cuda_root}")
+        print(f"CUDA architectures: {cuda_arch}")
     if build_headless:
         # it seems that cocoa cannot be disabled so on macOS the package is not truly headless
         cmake_args.append("-DWITH_WIN32UI=OFF")
@@ -275,7 +484,7 @@ def main():
         version=package_version,
         url="https://github.com/opencv/opencv-python",
         license="Apache 2.0",
-        description="Wrapper package for OpenCV python bindings.",
+        description="Wrapper package for OpenCV python bindings with CUDA support.",
         long_description=long_description,
         long_description_content_type="text/markdown",
         packages=packages,
@@ -480,19 +689,75 @@ class RearrangeCMakeOutput:
             os.path.join(cmake_install_dir, p) for p in final_install_relpaths
         ]
 
-        return (cls.wraps._classify_installed_files)(
-            final_install_paths,
-            package_data,
-            package_prefixes,
-            py_modules,
-            new_py_modules,
-            scripts,
-            new_scripts,
-            data_files,
-            # To get around a check that prepends source dir to paths and breaks package detection code.
-            cmake_source_dir="",
-            _cmake_install_dir=cmake_install_reldir,
-        )
+        # Check scikit-build version compatibility and call accordingly
+        try:
+            import skbuild
+            skbuild_version = getattr(skbuild, '__version__', '0.11.1')
+            
+            # For scikit-build 0.11.1 specifically (Ubuntu 22.04)
+            # Parameters: install_paths, package_data, package_prefixes, py_modules, 
+            #            new_py_modules, scripts, new_scripts, data_files, 
+            #            cmake_source_dir, cmake_install_dir
+            if skbuild_version == '0.11.1':
+                return (cls.wraps._classify_installed_files)(
+                    final_install_paths,      # install_paths
+                    package_data,             # package_data  
+                    package_prefixes,         # package_prefixes
+                    py_modules,               # py_modules
+                    new_py_modules,           # new_py_modules
+                    scripts,                  # scripts
+                    new_scripts,              # new_scripts
+                    data_files,               # data_files
+                    "",                       # cmake_source_dir
+                    cmake_install_reldir      # cmake_install_dir
+                )
+            
+            # For other 0.11.x versions, use keyword arguments to be safe
+            elif skbuild_version.startswith('0.11'):
+                return (cls.wraps._classify_installed_files)(
+                    install_paths=final_install_paths,
+                    package_data=package_data,
+                    package_prefixes=package_prefixes,
+                    py_modules=py_modules,
+                    new_py_modules=new_py_modules,
+                    scripts=scripts,
+                    new_scripts=new_scripts,
+                    data_files=data_files,
+                    cmake_source_dir="",
+                    cmake_install_dir=cmake_install_reldir
+                )
+
+            # For newer versions (0.12+)
+            else:
+                import inspect
+                original_func = cls.wraps._classify_installed_files
+                sig = inspect.signature(original_func)
+                
+                call_args = {
+                    'install_paths': final_install_paths,
+                    'package_data': package_data,
+                    'package_prefixes': package_prefixes,
+                    'py_modules': py_modules,
+                    'new_py_modules': new_py_modules,
+                    'scripts': scripts,
+                    'new_scripts': new_scripts,
+                    'data_files': data_files,
+                    'cmake_source_dir': "",
+                }
+                
+                if 'cmake_install_reldir' in sig.parameters:
+                    call_args['cmake_install_reldir'] = cmake_install_reldir
+                elif '_cmake_install_dir' in sig.parameters:
+                    call_args['_cmake_install_dir'] = cmake_install_reldir
+                elif 'cmake_install_dir' in sig.parameters:
+                    call_args['cmake_install_dir'] = cmake_install_reldir
+                
+                return original_func(**call_args)
+                
+        except Exception as e:
+            print(f"Warning: scikit-build compatibility issue: {e}")
+            # This should not happen now that we know the exact signature
+            raise e
 
 
 def get_and_set_info(contrib, headless, rolling, ci_build):
@@ -530,6 +795,45 @@ def get_build_env_var_by_name(flag_name):
             pass
 
     return flag_set
+
+def check_cuda_availability():
+    """Check if CUDA is available on the system"""
+    try:
+        # Check for nvcc
+        result = subprocess.run(['nvcc', '--version'], 
+                              capture_output=True, text=True, timeout=10)
+        if result.returncode == 0:
+            return True
+    except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError):
+        pass
+    
+    # Check for CUDA libraries
+    cuda_paths = ["/usr/local/cuda", "/opt/cuda", "/usr/lib/cuda"]
+    for path in cuda_paths:
+        if os.path.exists(os.path.join(path, "bin", "nvcc")):
+            return True
+    
+    return False
+
+
+def get_cuda_compute_capabilities():
+    """Detect available CUDA compute capabilities"""
+    try:
+        # Try to detect GPU compute capabilities
+        result = subprocess.run(['nvidia-smi', '--query-gpu=compute_cap', '--format=csv,noheader,nounits'], 
+                              capture_output=True, text=True, timeout=10)
+        if result.returncode == 0:
+            caps = set()
+            for line in result.stdout.strip().split('\n'):
+                if line.strip():
+                    caps.add(line.strip().replace('.', ''))
+            if caps:
+                return ','.join(sorted(caps))
+    except (subprocess.TimeoutExpired, FileNotFoundError, subprocess.SubprocessError):
+        pass
+    
+    # Fallback to common architectures
+    return "8.0,8.6,8.7,8.9,9.0"
 
 
 # This creates a list which is empty but returns a length of 1.
